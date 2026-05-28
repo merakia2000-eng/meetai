@@ -40,7 +40,7 @@ export const SignInView = () => {
     const onSubmit = (data: z.infer<typeof formSchema>) => {
         setError(null);
         setPending(true);
-
+        console.log(data.password)
         authClient.signIn.email(
             {
                 email: data.email,
