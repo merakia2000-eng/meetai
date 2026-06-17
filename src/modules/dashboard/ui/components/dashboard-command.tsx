@@ -2,6 +2,7 @@
 
 import {
     Command, // 确保导入了 Command
+    CommandResponsiveDialog,
     CommandDialog,
     CommandInput,
     CommandList, // 建议加上 List 包装
@@ -15,7 +16,7 @@ interface Props {
 
 export const DashboardCommand = ({ open, setOpen }: Props) => {
     return (
-        <CommandDialog open={open} onOpenChange={setOpen}>
+        <CommandResponsiveDialog open={open} onOpenChange={setOpen}>
             {/* 重点：有些版本的 shadcn 需要在 Dialog 内部显式写一个 Command 标签 */}
             <Command>
                 <CommandInput placeholder="Type a command or search..." />
@@ -23,6 +24,6 @@ export const DashboardCommand = ({ open, setOpen }: Props) => {
                     <CommandEmpty>No results found.</CommandEmpty>
                 </CommandList>
             </Command>
-        </CommandDialog>
+        </CommandResponsiveDialog>
     )
 }
