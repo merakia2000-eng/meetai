@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import { TRPCReactProvider } from "@/trpc/client"
+import { NuqsAdapter } from "nuqs/adapters/next"
 
 import "./globals.css";
 import { Variable } from "lucide-react";
@@ -33,16 +34,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <TRPCReactProvider>
-      <html
-        lang="en" suppressHydrationWarning
-        className={`${inter.className} antialiased`}
-      >
-        <body className="min-h-full flex flex-col">
-          <Toaster />
-          {children}
-        </body>
-      </html >
-    </TRPCReactProvider>
+    <NuqsAdapter>
+      <TRPCReactProvider>
+        <html
+          lang="en" suppressHydrationWarning
+          className={`${inter.className} antialiased`}
+        >
+          <body className="min-h-full flex flex-col">
+            <Toaster />
+            {children}
+          </body>
+        </html >
+      </TRPCReactProvider>
+    </NuqsAdapter>
   );
 }
