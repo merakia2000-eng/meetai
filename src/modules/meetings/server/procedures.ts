@@ -27,13 +27,18 @@ export const meetingsRouter = createTRPCRouter({
             }
         ])
 
-        const expirationTime = Math.floor(Date.now() / 1000) + 3600;
-        const issuedAt = Math.floor(Date.now() / 1000) - 60;
+        // 🚀 重点 1：获取秒数
+        const now = Math.floor(Date.now() / 1000);
+
+        // 🚀 重点 2：回拨 5 分钟 (300秒)
+        // 千万不要乘以 1000！
+        const iat = now - 300;
+        const exp = now + 3600;
 
         const token = streamVideo.generateUserToken({
             user_id: ctx.auth.user.id,
-            exp: expirationTime,
-            validity_in_seconds: issuedAt
+            iat: iat, // ✅ 必须传这个
+            exp: exp,
         })
 
         return token;
@@ -137,7 +142,7 @@ export const meetingsRouter = createTRPCRouter({
                 {
                     id: existingAgent.id,
                     name: existingAgent.name,
-                    role: "user",
+                    role: "admin",
                     image: generateAvatarUri({
                         seed: existingAgent.name,
                         variant: "botttsNeutral",
