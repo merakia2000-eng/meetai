@@ -1,63 +1,67 @@
-"use client"
-import { UpdateAgentDialog } from "../components/update-agents-dialog";
+"use client";
 
-import { ErrorState } from "@/components/error-state";
-import { LoadingState } from "@/components/loading-state";
-import { useTRPC } from "@/trpc/client"
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { AgentIdViewHeader } from "../components/agent-id-view-header";
-import { GeneratedAvatar } from "@/components/generated-avtar";
-import { Badge } from "@/components/ui/badge"
+import { toast } from "sonner";
+import { useState } from "react";
 import { VideoIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
-import { useConfirm } from "@/hooks/use-confirm";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
-import { useState } from "react";
+import { useTRPC } from "@/trpc/client";
+import { Badge } from "@/components/ui/badge";
+import { useConfirm } from "@/hooks/use-confirm";
+import { ErrorState } from "@/components/error-state";
+import { LoadingState } from "@/components/loading-state";
+
+import { AgentIdViewHeader } from "../components/agent-id-view-header";
+import { GeneratedAvatar } from "@/components/generated-avtar";
+import { UpdateAgentDialog } from "../components/update-agents-dialog";
 
 interface Props {
-    agentId: string
-}
+    agentId: string;
+};
 
 export const AgentIdView = ({ agentId }: Props) => {
     const trpc = useTRPC();
     const router = useRouter();
-
     const queryClient = useQueryClient();
 
-    const [UpdateAgentDialogOpen, setUpdateAgentDialogOpen] = useState(false);
+    const [updateAgentDialogOpen, setUpdateAgentDialogOpen] = useState(false);
 
-    const { data } = useSuspenseQuery(trpc.agents.getOne.queryOptions({ id: agentId }))
+    const { data } = useSuspenseQuery(trpc.agents.getOne.queryOptions({ id: agentId }));
+
     const removeAgent = useMutation(
         trpc.agents.remove.mutationOptions({
             onSuccess: async () => {
-                await queryClient.invalidateQueries(trpc.agents.getMany.queryOptions({}))
-                router.push("/agents")
+                await queryClient.invalidateQueries(trpc.agents.getMany.queryOptions({}));
+                await queryClient.invalidateQueries(
+                    trpc.premium.getFreeUsage.queryOptions(),
+                );
+                router.push("/agents");
             },
             onError: (error) => {
-                toast(error.message);
-            }
-        })
-    )
+                toast.error(error.message);
+            },
+        }),
+    );
 
     const [RemoveConfirmation, confirmRemove] = useConfirm(
-        "Are you suer ?",
+        "Are you sure?",
         `The following action will remove ${data.meetingCount} associated meetings`,
-    )
+    );
 
     const handleRemoveAgent = async () => {
         const ok = await confirmRemove();
 
-        if (!ok) return
+        if (!ok) return;
 
-        await removeAgent.mutateAsync({ id: agentId })
-    }
+        await removeAgent.mutateAsync({ id: agentId });
+    };
 
     return (
         <>
             <RemoveConfirmation />
             <UpdateAgentDialog
-                open={UpdateAgentDialogOpen}
+                open={updateAgentDialogOpen}
                 onOpenChange={setUpdateAgentDialogOpen}
                 initialValues={data}
             />
@@ -65,10 +69,9 @@ export const AgentIdView = ({ agentId }: Props) => {
                 <AgentIdViewHeader
                     agentId={agentId}
                     agentName={data.name}
-                    onEdit={() => { setUpdateAgentDialogOpen(true) }}
+                    onEdit={() => setUpdateAgentDialogOpen(true)}
                     onRemove={handleRemoveAgent}
                 />
-
                 <div className="bg-white rounded-lg border">
                     <div className="px-4 py-5 gap-y-5 flex flex-col col-span-5">
                         <div className="flex items-center gap-x-3">
@@ -83,8 +86,8 @@ export const AgentIdView = ({ agentId }: Props) => {
                             variant="outline"
                             className="flex items-center gap-x-2 [&>svg]:size-4"
                         >
-                            <VideoIcon />
-                            {data.meetingCount}{data.meetingCount === 1 ? "meeting" : "meetings"}
+                            <VideoIcon className="text-blue-700" />
+                            {data.meetingCount} {data.meetingCount === 1 ? "meeting" : "meetings"}
                         </Badge>
                         <div className="flex flex-col gap-y-4">
                             <p className="text-lg font-medium">Instructions</p>
@@ -94,21 +97,22 @@ export const AgentIdView = ({ agentId }: Props) => {
                 </div>
             </div>
         </>
-    )
-}
+    );
+};
 
-
-export const AgentsIdViewLoading = () => {
+export const AgentIdViewLoading = () => {
     return (
-        <LoadingState title="Loading Agents"
-            description="This make a fews seconds" />
-    )
-}
+        <LoadingState
+            title="Loading Agent"
+            description="This may take a fews econds"
+        />
+    );
+};
 
-export const AgentsIdViewError = () => {
+export const AgentIdViewError = () => {
     return (
         <ErrorState
-            title="Error Loading Agents"
+            title="Error Loading Agent"
             description="Something went wrong"
         />
     )
