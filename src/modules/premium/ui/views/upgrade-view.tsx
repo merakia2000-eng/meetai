@@ -63,7 +63,7 @@ export const UpgradeView = () => {
                                         : 0
                                 }
                                 description={product.description}
-                                priceSuffix={`/${product.prices[0].recurringInterval}`}
+                                priceSuffix={`/${(product.prices[0] as any).recurringInterval}`}
                                 features={product.benefits.map(
                                     (benefit) => benefit.description
                                 )}
