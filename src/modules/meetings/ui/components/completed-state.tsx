@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 
-import { GeneratedAvatar } from "@/components/generated-avatar";
+
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatDuration } from "@/lib/utils";
 import { Transcript } from "./transcript";
 import { ChatProvider } from "./chat-provider";
+import { GeneratedAvatar } from "@/components/generated-avtar";
 
 interface Props {
     data: MeetingGetOne;
