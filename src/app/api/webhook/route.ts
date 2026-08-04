@@ -42,7 +42,26 @@ export async function POST(req: NextRequest) {
 
     const body = await req.text();
 
-    if (!verifySignatureWithSDK(body, signature)) {
+    // 冷启动防御：首次验签失败时等 500ms 重试一次
+    // Vercel Serverless 冷启动期间 env/body 可能未就绪，重试给初始化留时间
+    // call.session_started 不重试，必须在这里兜住，否则智能体进不来
+    let verified = verifySignatureWithSDK(body, signature);
+    if (!verified) {
+        console.warn("[webhook] 首次验签失败，500ms 后重试", {
+            bodyLen: body.length,
+            sigLen: signature.length,
+            secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
+        });
+        await new Promise((r) => setTimeout(r, 500));
+        verified = verifySignatureWithSDK(body, signature);
+    }
+
+    if (!verified) {
+        console.error("[webhook] 验签最终失败", {
+            bodyLen: body.length,
+            sigLen: signature.length,
+            secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
+        });
         return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
