@@ -3,14 +3,6 @@ import { createHash } from "node:crypto";
 import { and, eq, not } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
-import {
-    MessageNewEvent,
-    CallEndedEvent,
-    CallTranscriptionReadyEvent,
-    CallRecordingReadyEvent,
-    CallSessionParticipantLeftEvent,
-    CallSessionStartedEvent,
-} from "@stream-io/node-sdk";
 
 import { db } from "@/db";
 import { agents, meetings } from "@/db/schema";
@@ -21,9 +13,41 @@ import { streamChat } from "@/lib/stream-chat";
 
 const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
+const AI_CONNECTION_TRIGGER_EVENTS = new Set([
+    "call.session_started",
+    "call.session_participant_joined",
+    "call.recording_started",
+    "call.transcription_started",
+]);
+
+const connectedAiMeetings = new Set<string>();
+
+type StreamWebhookPayload = Record<string, unknown> & {
+    type?: string;
+    call?: {
+        custom?: {
+            meetingId?: string;
+        };
+    };
+    call_cid?: string;
+    channel_id?: string;
+    user?: {
+        id?: string;
+    };
+    message?: {
+        text?: string;
+    };
+    call_transcription?: {
+        url?: string;
+    };
+    call_recording?: {
+        url?: string;
+    };
+};
+
 function verifySignatureWithSDK(body: string, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
-};
+}
 
 function fingerprint(value?: string): string {
     if (!value) return "missing";
@@ -34,6 +58,106 @@ function fingerprint(value?: string): string {
         .slice(0, 10);
 }
 
+function getMeetingId(payload: StreamWebhookPayload): string | undefined {
+    return payload.call?.custom?.meetingId ?? payload.call_cid?.split(":")[1];
+}
+
+async function connectAiToMeeting(meetingId: string, eventType: string) {
+    if (connectedAiMeetings.has(meetingId)) {
+        console.log("[webhook] AI connection already attempted", {
+            eventType,
+            meetingId,
+        });
+        return;
+    }
+
+    const [existingMeeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+            and(
+                eq(meetings.id, meetingId),
+                not(eq(meetings.status, "completed")),
+                not(eq(meetings.status, "cancelled")),
+                not(eq(meetings.status, "processing")),
+            ),
+        );
+
+    if (!existingMeeting) {
+        console.error("[webhook] meeting not available for AI connection", {
+            eventType,
+            meetingId,
+        });
+        return NextResponse.json({ error: "Meeting not found" }, { status: 404 });
+    }
+
+    if (existingMeeting.status !== "active") {
+        await db
+            .update(meetings)
+            .set({
+                status: "active",
+                startedAt: existingMeeting.startedAt ?? new Date(),
+            })
+            .where(eq(meetings.id, existingMeeting.id));
+    }
+
+    const [existingAgent] = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, existingMeeting.agentId));
+
+    if (!existingAgent) {
+        console.error("[webhook] agent not found for AI connection", {
+            eventType,
+            meetingId,
+            agentId: existingMeeting.agentId,
+        });
+        return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
+
+    const call = streamVideo.video.call("default", meetingId);
+
+    try {
+        console.log("[webhook] connecting AI", {
+            eventType,
+            meetingId,
+            agentUserId: existingAgent.id,
+        });
+
+        connectedAiMeetings.add(meetingId);
+
+        const realtimeClient = await streamVideo.video.connectOpenAi({
+            call,
+            openAiApiKey: process.env.OPENAI_API_KEY!,
+            agentUserId: existingAgent.id,
+        });
+
+        realtimeClient.updateSession({
+            instructions: existingAgent.instructions,
+        });
+
+        console.log("[webhook] AI connected", {
+            eventType,
+            meetingId,
+            agentUserId: existingAgent.id,
+        });
+    } catch (error) {
+        connectedAiMeetings.delete(meetingId);
+
+        console.error("[webhook] connectOpenAi failed", {
+            eventType,
+            meetingId,
+            agentUserId: existingAgent.id,
+            error,
+        });
+
+        return NextResponse.json(
+            { error: "Failed to connect AI" },
+            { status: 500 },
+        );
+    }
+}
+
 export async function POST(req: NextRequest) {
     const signature = req.headers.get("x-signature");
     const apiKey = req.headers.get("x-api-key");
@@ -41,23 +165,31 @@ export async function POST(req: NextRequest) {
     if (!signature || !apiKey) {
         return NextResponse.json(
             { error: "Missing signature or API key" },
-            { status: 400 }
+            { status: 400 },
         );
     }
 
     if (apiKey !== process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY) {
-        console.error("非法 API KEY 尝试访问！");
+        console.error("[webhook] invalid API key", {
+            apiKeyFingerprint: fingerprint(apiKey),
+            configuredApiKeyFingerprint: fingerprint(
+                process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY,
+            ),
+        });
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const body = await req.text();
 
-    let payload: Record<string, unknown>;
+    let payload: StreamWebhookPayload;
     try {
-        payload = JSON.parse(body) as Record<string, unknown>;
+        payload = JSON.parse(body) as StreamWebhookPayload;
     } catch {
         console.error("[webhook] invalid JSON", {
             bodyLen: body.length,
+            contentType: req.headers.get("content-type"),
+            userAgent: req.headers.get("user-agent"),
+            bodyPreview: body.slice(0, 120),
         });
 
         return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
@@ -80,22 +212,19 @@ export async function POST(req: NextRequest) {
         ),
     });
 
-    // 冷启动防御：首次验签失败时等 500ms 重试一次
-    // Vercel Serverless 冷启动期间 env/body 可能未就绪，重试给初始化留时间
-    // call.session_started 不重试，必须在这里兜住，否则智能体进不来
     let verified = verifySignatureWithSDK(body, signature);
     if (!verified) {
-        console.warn("[webhook] 首次验签失败，500ms 后重试", {
+        console.warn("[webhook] first signature verification failed; retrying", {
             bodyLen: body.length,
             sigLen: signature.length,
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
         });
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         verified = verifySignatureWithSDK(body, signature);
     }
 
     if (!verified) {
-        console.error("[webhook] 验签最终失败", {
+        console.error("[webhook] signature verification failed", {
             bodyLen: body.length,
             sigLen: signature.length,
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
@@ -106,72 +235,22 @@ export async function POST(req: NextRequest) {
 
     console.log("[webhook] signature verified", { eventType });
 
-    if (eventType === "call.session_started") {
-        const event = payload as unknown as CallSessionStartedEvent;
-        const meetingId = event.call.custom?.meetingId;
+    if (eventType && AI_CONNECTION_TRIGGER_EVENTS.has(eventType)) {
+        const meetingId = getMeetingId(payload);
+
+        console.log("[webhook] AI trigger event", {
+            eventType,
+            meetingId,
+        });
 
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
         }
 
-        const [existingMeeting] = await db
-            .select()
-            .from(meetings)
-            .where(
-                and(
-                    eq(meetings.id, meetingId),
-                    not(eq(meetings.status, "completed")),
-                    not(eq(meetings.status, "active")),
-                    not(eq(meetings.status, "cancelled")),
-                    not(eq(meetings.status, "processing")),
-                )
-            );
-
-        if (!existingMeeting) {
-            return NextResponse.json({ error: "Meeting not found" }, { status: 404 });
-        }
-
-        await db
-            .update(meetings)
-            .set({
-                status: "active",
-                startedAt: new Date(),
-            })
-            .where(eq(meetings.id, existingMeeting.id));
-
-        const [existingAgent] = await db
-            .select()
-            .from(agents)
-            .where(eq(agents.id, existingMeeting.agentId));
-
-        if (!existingAgent) {
-            return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-        }
-
-        const call = streamVideo.video.call("default", meetingId);
-        console.log("[webhook] connecting AI", {
-            eventType,
-            meetingId,
-            agentUserId: existingAgent.id,
-        });
-
-        const realtimeClient = await streamVideo.video.connectOpenAi({
-            call,
-            openAiApiKey: process.env.OPENAI_API_KEY!,
-            agentUserId: existingAgent.id,
-        });
-
-        console.log("[webhook] AI connected", {
-            meetingId,
-            agentUserId: existingAgent.id,
-        });
-
-        realtimeClient.updateSession({
-            instructions: existingAgent.instructions,
-        });
+        const response = await connectAiToMeeting(meetingId, eventType);
+        if (response) return response;
     } else if (eventType === "call.session_participant_left") {
-        const event = payload as unknown as CallSessionParticipantLeftEvent;
-        const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
+        const meetingId = getMeetingId(payload);
 
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
@@ -180,8 +259,7 @@ export async function POST(req: NextRequest) {
         const call = streamVideo.video.call("default", meetingId);
         await call.end();
     } else if (eventType === "call.session_ended") {
-        const event = payload as unknown as CallEndedEvent;
-        const meetingId = event.call.custom?.meetingId;
+        const meetingId = getMeetingId(payload);
 
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
@@ -195,13 +273,16 @@ export async function POST(req: NextRequest) {
             })
             .where(and(eq(meetings.id, meetingId), eq(meetings.status, "active")));
     } else if (eventType === "call.transcription_ready") {
-        const event = payload as unknown as CallTranscriptionReadyEvent;
-        const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
+        const meetingId = getMeetingId(payload);
+
+        if (!meetingId) {
+            return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
+        }
 
         const [updatedMeeting] = await db
             .update(meetings)
             .set({
-                transcriptUrl: event.call_transcription.url,
+                transcriptUrl: payload.call_transcription?.url,
             })
             .where(eq(meetings.id, meetingId))
             .returning();
@@ -218,26 +299,27 @@ export async function POST(req: NextRequest) {
             },
         });
     } else if (eventType === "call.recording_ready") {
-        const event = payload as unknown as CallRecordingReadyEvent;
-        const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
+        const meetingId = getMeetingId(payload);
+
+        if (!meetingId) {
+            return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
+        }
 
         await db
             .update(meetings)
             .set({
-                recordingUrl: event.call_recording.url,
+                recordingUrl: payload.call_recording?.url,
             })
             .where(eq(meetings.id, meetingId));
     } else if (eventType === "message.new") {
-        const event = payload as unknown as MessageNewEvent;
-
-        const userId = event.user?.id;
-        const channelId = event.channel_id;
-        const text = event.message?.text;
+        const userId = payload.user?.id;
+        const channelId = payload.channel_id;
+        const text = payload.message?.text;
 
         if (!userId || !channelId || !text) {
             return NextResponse.json(
                 { error: "Missing required fields" },
-                { status: 400 }
+                { status: 400 },
             );
         }
 
@@ -263,20 +345,20 @@ export async function POST(req: NextRequest) {
             const instructions = `
       You are an AI assistant helping the user revisit a recently completed meeting.
       Below is a summary of the meeting, generated from the transcript:
-      
+
       ${existingMeeting.summary}
-      
+
       The following are your original instructions from the live meeting assistant. Please continue to follow these behavioral guidelines as you assist the user:
-      
+
       ${existingAgent.instructions}
-      
+
       The user may ask questions about the meeting, request clarifications, or ask for follow-up actions.
       Always base your responses on the meeting summary above.
-      
+
       You also have access to the recent conversation history between you and the user. Use the context of previous messages to provide relevant, coherent, and helpful responses. If the user's question refers to something discussed earlier, make sure to take that into account and maintain continuity in the conversation.
-      
+
       If the summary does not contain enough information to answer a question, politely let the user know.
-      
+
       Be concise, helpful, and focus on providing accurate information from the meeting and the ongoing conversation.
       `;
 
@@ -285,7 +367,7 @@ export async function POST(req: NextRequest) {
 
             const previousMessages = channel.state.messages
                 .slice(-5)
-                .filter((msg) => msg.text && msg.text.trim() !== "")
+                .filter((message) => message.text && message.text.trim() !== "")
                 .map<ChatCompletionMessageParam>((message) => ({
                     role: message.user?.id === existingAgent.id ? "assistant" : "user",
                     content: message.text || "",
@@ -305,7 +387,7 @@ export async function POST(req: NextRequest) {
             if (!GPTResponseText) {
                 return NextResponse.json(
                     { error: "No response from GPT" },
-                    { status: 400 }
+                    { status: 400 },
                 );
             }
 
