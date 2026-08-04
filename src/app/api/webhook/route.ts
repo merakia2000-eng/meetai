@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { createHash } from "node:crypto";
 import { and, eq, not } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
@@ -24,6 +25,15 @@ function verifySignatureWithSDK(body: string, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
 };
 
+function fingerprint(value?: string): string {
+    if (!value) return "missing";
+
+    return createHash("sha256")
+        .update(value)
+        .digest("hex")
+        .slice(0, 10);
+}
+
 export async function POST(req: NextRequest) {
     const signature = req.headers.get("x-signature");
     const apiKey = req.headers.get("x-api-key");
@@ -41,6 +51,34 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.text();
+
+    let payload: Record<string, unknown>;
+    try {
+        payload = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+        console.error("[webhook] invalid JSON", {
+            bodyLen: body.length,
+        });
+
+        return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    }
+
+    const eventType = payload.type;
+
+    console.log("[webhook] received", {
+        eventType,
+        bodyLen: body.length,
+        signatureLen: signature.length,
+        apiKeyMatches:
+            apiKey === process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY,
+        apiKeyFingerprint: fingerprint(apiKey),
+        configuredApiKeyFingerprint: fingerprint(
+            process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY,
+        ),
+        configuredSecretFingerprint: fingerprint(
+            process.env.STREAM_VIDEO_SECRET_KEY,
+        ),
+    });
 
     // 冷启动防御：首次验签失败时等 500ms 重试一次
     // Vercel Serverless 冷启动期间 env/body 可能未就绪，重试给初始化留时间
@@ -61,18 +99,12 @@ export async function POST(req: NextRequest) {
             bodyLen: body.length,
             sigLen: signature.length,
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
+            eventType,
         });
         return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
-    let payload: unknown;
-    try {
-        payload = JSON.parse(body) as Record<string, unknown>;
-    } catch {
-        return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-    }
-
-    const eventType = (payload as Record<string, unknown>)?.type;
+    console.log("[webhook] signature verified", { eventType });
 
     if (eventType === "call.session_started") {
         const event = payload as CallSessionStartedEvent;
@@ -117,9 +149,20 @@ export async function POST(req: NextRequest) {
         }
 
         const call = streamVideo.video.call("default", meetingId);
+        console.log("[webhook] connecting AI", {
+            eventType,
+            meetingId,
+            agentUserId: existingAgent.id,
+        });
+
         const realtimeClient = await streamVideo.video.connectOpenAi({
             call,
             openAiApiKey: process.env.OPENAI_API_KEY!,
+            agentUserId: existingAgent.id,
+        });
+
+        console.log("[webhook] AI connected", {
+            meetingId,
             agentUserId: existingAgent.id,
         });
 
