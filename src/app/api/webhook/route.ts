@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
     console.log("[webhook] signature verified", { eventType });
 
     if (eventType === "call.session_started") {
-        const event = payload as CallSessionStartedEvent;
+        const event = payload as unknown as CallSessionStartedEvent;
         const meetingId = event.call.custom?.meetingId;
 
         if (!meetingId) {
@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
             instructions: existingAgent.instructions,
         });
     } else if (eventType === "call.session_participant_left") {
-        const event = payload as CallSessionParticipantLeftEvent;
+        const event = payload as unknown as CallSessionParticipantLeftEvent;
         const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
 
         if (!meetingId) {
@@ -180,7 +180,7 @@ export async function POST(req: NextRequest) {
         const call = streamVideo.video.call("default", meetingId);
         await call.end();
     } else if (eventType === "call.session_ended") {
-        const event = payload as CallEndedEvent;
+        const event = payload as unknown as CallEndedEvent;
         const meetingId = event.call.custom?.meetingId;
 
         if (!meetingId) {
@@ -195,7 +195,7 @@ export async function POST(req: NextRequest) {
             })
             .where(and(eq(meetings.id, meetingId), eq(meetings.status, "active")));
     } else if (eventType === "call.transcription_ready") {
-        const event = payload as CallTranscriptionReadyEvent;
+        const event = payload as unknown as CallTranscriptionReadyEvent;
         const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
 
         const [updatedMeeting] = await db
@@ -218,7 +218,7 @@ export async function POST(req: NextRequest) {
             },
         });
     } else if (eventType === "call.recording_ready") {
-        const event = payload as CallRecordingReadyEvent;
+        const event = payload as unknown as CallRecordingReadyEvent;
         const meetingId = event.call_cid.split(":")[1]; // call_cid is formatted as "type:id"
 
         await db
@@ -228,7 +228,7 @@ export async function POST(req: NextRequest) {
             })
             .where(eq(meetings.id, meetingId));
     } else if (eventType === "message.new") {
-        const event = payload as MessageNewEvent;
+        const event = payload as unknown as MessageNewEvent;
 
         const userId = event.user?.id;
         const channelId = event.channel_id;
