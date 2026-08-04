@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { and, eq, not } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
@@ -45,7 +46,7 @@ type StreamWebhookPayload = Record<string, unknown> & {
     };
 };
 
-function verifySignatureWithSDK(body: string, signature: string): boolean {
+function verifySignatureWithSDK(body: string | Buffer, signature: string): boolean {
     return streamVideo.verifyWebhook(body, signature);
 }
 
@@ -60,6 +61,26 @@ function fingerprint(value?: string): string {
 
 function getMeetingId(payload: StreamWebhookPayload): string | undefined {
     return payload.call?.custom?.meetingId ?? payload.call_cid?.split(":")[1];
+}
+
+function decodeWebhookBody(rawBody: Buffer, contentEncoding?: string | null) {
+    const isGzip =
+        contentEncoding?.toLowerCase().includes("gzip") ||
+        (rawBody[0] === 0x1f && rawBody[1] === 0x8b);
+
+    return isGzip ? gunzipSync(rawBody).toString("utf8") : rawBody.toString("utf8");
+}
+
+function serializeError(error: unknown) {
+    if (error instanceof Error) {
+        return {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+        };
+    }
+
+    return error;
 }
 
 async function connectAiToMeeting(meetingId: string, eventType: string) {
@@ -130,6 +151,7 @@ async function connectAiToMeeting(meetingId: string, eventType: string) {
             call,
             openAiApiKey: process.env.OPENAI_API_KEY!,
             agentUserId: existingAgent.id,
+            model: "gpt-4o-realtime-preview",
         });
 
         realtimeClient.updateSession({
@@ -148,7 +170,7 @@ async function connectAiToMeeting(meetingId: string, eventType: string) {
             eventType,
             meetingId,
             agentUserId: existingAgent.id,
-            error,
+            error: serializeError(error),
         });
 
         return NextResponse.json(
@@ -179,7 +201,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const body = await req.text();
+    const rawBody = Buffer.from(await req.arrayBuffer());
+    const body = decodeWebhookBody(rawBody, req.headers.get("content-encoding"));
 
     let payload: StreamWebhookPayload;
     try {
@@ -187,7 +210,9 @@ export async function POST(req: NextRequest) {
     } catch {
         console.error("[webhook] invalid JSON", {
             bodyLen: body.length,
+            rawBodyLen: rawBody.length,
             contentType: req.headers.get("content-type"),
+            contentEncoding: req.headers.get("content-encoding"),
             userAgent: req.headers.get("user-agent"),
             bodyPreview: body.slice(0, 120),
         });
@@ -200,6 +225,7 @@ export async function POST(req: NextRequest) {
     console.log("[webhook] received", {
         eventType,
         bodyLen: body.length,
+        rawBodyLen: rawBody.length,
         signatureLen: signature.length,
         apiKeyMatches:
             apiKey === process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY,
@@ -212,20 +238,22 @@ export async function POST(req: NextRequest) {
         ),
     });
 
-    let verified = verifySignatureWithSDK(body, signature);
+    let verified = verifySignatureWithSDK(rawBody, signature);
     if (!verified) {
         console.warn("[webhook] first signature verification failed; retrying", {
             bodyLen: body.length,
+            rawBodyLen: rawBody.length,
             sigLen: signature.length,
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
         });
         await new Promise((resolve) => setTimeout(resolve, 500));
-        verified = verifySignatureWithSDK(body, signature);
+        verified = verifySignatureWithSDK(rawBody, signature);
     }
 
     if (!verified) {
         console.error("[webhook] signature verification failed", {
             bodyLen: body.length,
+            rawBodyLen: rawBody.length,
             sigLen: signature.length,
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
             eventType,
@@ -251,9 +279,28 @@ export async function POST(req: NextRequest) {
         if (response) return response;
     } else if (eventType === "call.session_participant_left") {
         const meetingId = getMeetingId(payload);
+        const userId = payload.user?.id;
 
         if (!meetingId) {
             return NextResponse.json({ error: "Missing meetingId" }, { status: 400 });
+        }
+
+        const [existingMeeting] = await db
+            .select()
+            .from(meetings)
+            .where(eq(meetings.id, meetingId));
+
+        if (
+            userId &&
+            (userId === existingMeeting?.agentId ||
+                userId.startsWith("recording-egress-"))
+        ) {
+            console.log("[webhook] ignoring non-host participant left", {
+                eventType,
+                meetingId,
+                userId,
+            });
+            return NextResponse.json({ status: "ok" });
         }
 
         const call = streamVideo.video.call("default", meetingId);
