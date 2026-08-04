@@ -35,6 +35,11 @@ export async function POST(req: NextRequest) {
         );
     }
 
+    if (apiKey !== process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY) {
+        console.error("非法 API KEY 尝试访问！");
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
     const body = await req.text();
 
     if (!verifySignatureWithSDK(body, signature)) {
