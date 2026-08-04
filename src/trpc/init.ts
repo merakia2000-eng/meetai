@@ -8,10 +8,21 @@ import { count, eq } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { cache } from 'react';
 export const createTRPCContext = cache(async () => {
-    /**
-     * @see: https://trpc.io/docs/server/context
-     */
-    return { userId: 'user_123' };
+    // 1. 获取当前的请求头（包含用户的 Cookie）
+    const heads = await headers();
+
+    // 2. 调用 Better Auth 检查有没有 Session
+    const session = await auth.api.getSession({
+        headers: heads,
+    });
+
+    // 3. 返回真正的用户信息（如果没登录，session 就是 null）
+    return {
+        db,
+        session,
+        // 兼容你之前的逻辑，如果 session 存在就传真实 ID
+        userId: session?.user.id ?? null
+    };
 });
 // Avoid exporting the entire t-object
 // since it's not very descriptive.
