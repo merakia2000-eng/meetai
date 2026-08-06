@@ -238,7 +238,9 @@ export async function POST(req: NextRequest) {
         ),
     });
 
-    let verified = verifySignatureWithSDK(rawBody, signature);
+    let verified =
+        verifySignatureWithSDK(rawBody, signature) ||
+        verifySignatureWithSDK(body, signature);
     if (!verified) {
         console.warn("[webhook] first signature verification failed; retrying", {
             bodyLen: body.length,
@@ -247,7 +249,9 @@ export async function POST(req: NextRequest) {
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
         });
         await new Promise((resolve) => setTimeout(resolve, 500));
-        verified = verifySignatureWithSDK(rawBody, signature);
+        verified =
+            verifySignatureWithSDK(rawBody, signature) ||
+            verifySignatureWithSDK(body, signature);
     }
 
     if (!verified) {
