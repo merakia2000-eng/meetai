@@ -151,7 +151,8 @@ async function connectAiToMeeting(meetingId: string, eventType: string) {
             call,
             openAiApiKey: process.env.OPENAI_API_KEY!,
             agentUserId: existingAgent.id,
-            model: "gpt-4o-realtime-preview",
+            // model: "gpt-4o-realtime-preview",
+            model: "gpt-realtime",
         });
 
         realtimeClient.updateSession({
