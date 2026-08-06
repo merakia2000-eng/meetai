@@ -238,7 +238,8 @@ export async function POST(req: NextRequest) {
         ),
     });
 
-    let verified = verifySignatureWithSDK(rawBody, signature);
+    let verified = verifySignatureWithSDK(rawBody, signature) ||
+        verifySignatureWithSDK(body, signature);
     if (!verified) {
         console.warn("[webhook] first signature verification failed; retrying", {
             bodyLen: body.length,
@@ -247,7 +248,8 @@ export async function POST(req: NextRequest) {
             secretLen: process.env.STREAM_VIDEO_SECRET_KEY?.length,
         });
         await new Promise((resolve) => setTimeout(resolve, 500));
-        verified = verifySignatureWithSDK(rawBody, signature);
+        verified = verifySignatureWithSDK(rawBody, signature) ||
+            verifySignatureWithSDK(body, signature);
     }
 
     if (!verified) {
@@ -461,4 +463,11 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ status: "ok" });
+}
+
+// 在原来的 POST 函数下面，增加这一段
+export async function GET() {
+    return NextResponse.json({
+        message: "你好！我是 Webhook 接口，我正活着呢。请用 POST 方法给我发信！"
+    });
 }
